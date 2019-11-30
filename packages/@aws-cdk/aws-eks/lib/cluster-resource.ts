@@ -1,11 +1,8 @@
 import cfn = require('@aws-cdk/aws-cloudformation');
-import { PolicyStatement } from '@aws-cdk/aws-iam';
 import iam = require('@aws-cdk/aws-iam');
-import lambda = require('@aws-cdk/aws-lambda');
-import { Construct, Duration, Token } from '@aws-cdk/core';
-import path = require('path');
+import { Construct, Token } from '@aws-cdk/core';
+import { ClusterResourceProvider } from './cluster-resource-provider';
 import { CfnClusterProps } from './eks.generated';
-import { KubectlLayer } from './kubectl-layer';
 
 /**
  * A low-level CFN resource Amazon EKS cluster implemented through a custom
@@ -38,39 +35,23 @@ export class ClusterResource extends Construct {
   constructor(scope: Construct, id: string, props: CfnClusterProps) {
     super(scope, id);
 
-    // each cluster resource will have it's own lambda handler since permissions
-    // are scoped to this cluster and related resources like it's role
-    const handler = new lambda.Function(this, 'ResourceHandler', {
-      code: lambda.Code.fromAsset(path.join(__dirname, 'cluster-resource')),
-      runtime: lambda.Runtime.PYTHON_3_7,
-      handler: 'index.handler',
-      timeout: Duration.minutes(15),
-      memorySize: 512,
-      layers: [ KubectlLayer.getOrCreate(this) ],
-    });
+    const provider = ClusterResourceProvider.getOrCreate(this);
 
     if (!props.roleArn) {
       throw new Error(`"roleArn" is required`);
     }
 
-    // since we don't know the cluster name at this point, we must give this role star resource permissions
-    handler.addToRolePolicy(new PolicyStatement({
-      actions: [ 'eks:CreateCluster', 'eks:DescribeCluster', 'eks:DeleteCluster', 'eks:UpdateClusterVersion' ],
-      resources: [ '*' ]
-    }));
-
-    // the CreateCluster API will allow the cluster to assume this role, so we
-    // need to allow the lambda execution role to pass it.
-    handler.addToRolePolicy(new PolicyStatement({
-      actions: [ 'iam:PassRole' ],
-      resources: [ props.roleArn ]
-    }));
+    provider.allowPassRole(props.roleArn);
 
     const resource = new cfn.CustomResource(this, 'Resource', {
       resourceType: ClusterResource.RESOURCE_TYPE,
-      provider: cfn.CustomResourceProvider.lambda(handler),
+      provider: provider.provider,
       properties: {
-        Config: props
+        Config: props,
+        // TODO: CreationRole:
+        // currently, the role that creates the cluster is the one we use for the
+        // provider lambda function but this is not good enough because it is shared
+        // between all clusters in this stack (since the provider is a singleton).
       }
     });
 
@@ -78,6 +59,6 @@ export class ClusterResource extends Construct {
     this.attrEndpoint = Token.asString(resource.getAtt('Endpoint'));
     this.attrArn = Token.asString(resource.getAtt('Arn'));
     this.attrCertificateAuthorityData = Token.asString(resource.getAtt('CertificateAuthorityData'));
-    this.creationRole = handler.role!;
+    this.creationRole = provider.role;
   }
 }

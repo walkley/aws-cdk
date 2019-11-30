@@ -29,7 +29,6 @@ def handler(event, context):
 
         request_type = event['RequestType']
         props = event['ResourceProperties']
-        old_props = event.get('OldResourceProperties', {})
         physical_id = event.get('PhysicalResourceId', None)
         manifest_text = props['Manifest']
 
@@ -81,13 +80,21 @@ def handler(event, context):
 
 def kubectl(verb, file):
     import subprocess
-    try:
-        cmnd = ['kubectl', verb, '--kubeconfig', kubeconfig, '-f', file]
-        output = subprocess.check_output(cmnd, stderr=subprocess.STDOUT)
-    except subprocess.CalledProcessError as exc:
-        raise Exception(exc.output)
-    else:
-        logger.info(output)
+    retry = 3
+    while retry > 0:
+        try:
+            cmd = ['kubectl', verb, '--kubeconfig', kubeconfig, '-f', file]
+            output = subprocess.check_output(cmd, stderr=subprocess.STDOUT)
+        except subprocess.CalledProcessError as exc:
+            output = exc.output
+            if 'i/o timeout' in output and retry > 0:
+                logger.info("kubectl timed out, retries left: %s" % retry)
+                retry = retry - 1
+            else:
+                raise Exception(output)
+        else:
+            logger.info(output)
+            return
 
 
 #---------------------------------------------------------------------------------------------------
