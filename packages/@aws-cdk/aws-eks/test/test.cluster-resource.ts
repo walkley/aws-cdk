@@ -2,8 +2,6 @@ import { Test } from 'nodeunit';
 import { ClusterResourceHandler } from '../lib/cluster-resource-handler/handler';
 import mocks = require('./cluster-resource-handler-mocks');
 
-const handler = new ClusterResourceHandler(mocks.client);
-
 export = {
   setUp(callback: any) {
     mocks.reset();
@@ -12,13 +10,14 @@ export = {
 
   create: {
     async 'onCreate: minimal defaults (vpc + role)'(test: Test) {
-      await handler.onCreate(mocks.newRequest('Create', mocks.MOCK_PROPS));
+      const handler = new ClusterResourceHandler(mocks.client, mocks.newRequest('Create', mocks.MOCK_PROPS));
+      await handler.onCreate();
 
       test.deepEqual(mocks.createClusterRequest, {
         roleArn: 'arn:of:role',
         resourcesVpcConfig: {
-          subnetIds: [ 'subnet1', 'subnet2' ],
-          securityGroupIds: [ 'sg1', 'sg2', 'sg3' ]
+          subnetIds: ['subnet1', 'subnet2'],
+          securityGroupIds: ['sg1', 'sg2', 'sg3']
         },
         name: 'cluster-fake-request-id'
       });
@@ -27,36 +26,40 @@ export = {
     },
 
     async 'onCreate: explicit cluster name'(test: Test) {
-      await handler.onCreate(mocks.newRequest('Create', {
+      const handler = new ClusterResourceHandler(mocks.client, mocks.newRequest('Create', {
         ...mocks.MOCK_PROPS,
         name: 'ExplicitCustomName'
       }));
+      await handler.onCreate();
 
       test.deepEqual(mocks.createClusterRequest!.name, 'ExplicitCustomName');
       test.done();
     },
 
     async 'with no specific version'(test: Test) {
-      await handler.onCreate(mocks.newRequest('Create', {
+      const handler = new ClusterResourceHandler(mocks.client, mocks.newRequest('Create', {
         ...mocks.MOCK_PROPS,
         version: '12.34.56',
       }));
+      await handler.onCreate();
 
       test.deepEqual(mocks.createClusterRequest!.version, '12.34.56');
       test.done();
     },
 
     async 'isCreateComplete still not complete if cluster is not ACTIVE'(test: Test) {
+      const handler = new ClusterResourceHandler(mocks.client, mocks.newRequest('Create'));
       mocks.describeClusterResponseMockStatus = 'CREATING';
-      const resp = await handler.isCreateComplete(mocks.newRequest('Create'));
+      const resp = await handler.isCreateComplete();
       test.deepEqual(mocks.describeClusterRequest!.name, 'physical-resource-id');
       test.deepEqual(resp, { IsComplete: false });
       test.done();
     },
 
     async 'isCreateComplete is complete when cluster is ACTIVE'(test: Test) {
+      const handler = new ClusterResourceHandler(mocks.client, mocks.newRequest('Create'));
       mocks.describeClusterResponseMockStatus = 'ACTIVE';
-      const resp = await handler.isCreateComplete(mocks.newRequest('Create'));
+      const resp = await handler.isCreateComplete();
       test.deepEqual(resp, {
         IsComplete: true,
         Data: {
@@ -73,37 +76,42 @@ export = {
 
   delete: {
     async 'returns correct physical name'(test: Test) {
-      const resp = await handler.onDelete(mocks.newRequest('Delete'));
+      const handler = new ClusterResourceHandler(mocks.client, mocks.newRequest('Delete'));
+      const resp = await handler.onDelete();
       test.deepEqual(mocks.deleteClusterRequest!.name, 'physical-resource-id');
       test.deepEqual(resp, { PhysicalResourceId: 'physical-resource-id' });
       test.done();
     },
 
     async 'onDelete ignores ResourceNotFoundException'(test: Test) {
+      const handler = new ClusterResourceHandler(mocks.client, mocks.newRequest('Delete'));
       mocks.deleteClusterErrorCode = 'ResourceNotFoundException';
-      await handler.onDelete(mocks.newRequest('Delete'));
+      await handler.onDelete();
       test.done();
     },
 
     async 'isDeleteComplete returns false as long as describeCluster succeeds'(test: Test) {
-      const resp = await handler.isDeleteComplete(mocks.newRequest('Delete'));
+      const handler = new ClusterResourceHandler(mocks.client, mocks.newRequest('Delete'));
+      const resp = await handler.isDeleteComplete();
       test.deepEqual(mocks.describeClusterRequest!.name, 'physical-resource-id');
       test.ok(!resp.IsComplete);
       test.done();
     },
 
     async 'isDeleteComplete returns true when describeCluster throws a ResourceNotFound exception'(test: Test) {
+      const handler = new ClusterResourceHandler(mocks.client, mocks.newRequest('Delete'));
       mocks.describeClusterExceptionCode = 'ResourceNotFoundException';
-      const resp = await handler.isDeleteComplete(mocks.newRequest('Delete'));
+      const resp = await handler.isDeleteComplete();
       test.ok(resp.IsComplete);
       test.done();
     },
 
     async 'isDeleteComplete propagates other errors'(test: Test) {
+      const handler = new ClusterResourceHandler(mocks.client, mocks.newRequest('Delete'));
       mocks.describeClusterExceptionCode = 'OtherException';
       let error;
       try {
-        await handler.isDeleteComplete(mocks.newRequest('Delete'));
+        await handler.isDeleteComplete();
       } catch (e) {
         error = e;
       }
@@ -115,7 +123,8 @@ export = {
   update: {
 
     async 'no change'(test: Test) {
-      const resp = await handler.onUpdate(mocks.newRequest('Update', mocks.MOCK_PROPS, mocks.MOCK_PROPS));
+      const handler = new ClusterResourceHandler(mocks.client, mocks.newRequest('Update', mocks.MOCK_PROPS, mocks.MOCK_PROPS));
+      const resp = await handler.onUpdate();
       test.equal(resp, undefined);
       test.equal(mocks.createClusterRequest, undefined);
       test.equal(mocks.updateClusterConfigRequest, undefined);
@@ -124,15 +133,17 @@ export = {
     },
 
     async 'isUpdateComplete is not complete when status is not ACTIVE'(test: Test) {
+      const handler = new ClusterResourceHandler(mocks.client, mocks.newRequest('Update'));
       mocks.describeClusterResponseMockStatus = 'UPDATING';
-      const resp = await handler.isUpdateComplete(mocks.newRequest('Update'));
+      const resp = await handler.isUpdateComplete();
       test.deepEqual(resp.IsComplete, false);
       test.done();
     },
 
     async 'isUpdateComplete waits for ACTIVE'(test: Test) {
+      const handler = new ClusterResourceHandler(mocks.client, mocks.newRequest('Update'));
       mocks.describeClusterResponseMockStatus = 'ACTIVE';
-      const resp = await handler.isUpdateComplete(mocks.newRequest('Update'));
+      const resp = await handler.isUpdateComplete();
       test.deepEqual(resp.IsComplete, true);
       test.done();
     },
@@ -142,8 +153,20 @@ export = {
       'name change': {
 
         async 'a new cluster is created with the new name and returned through PhysicalResourceId'(test: Test) {
-          const resp = await handler.onUpdate(mocks.newRequest('Update', { name: 'new-cluster-name-1234' }));
-          test.deepEqual(mocks.createClusterRequest!, { name: 'new-cluster-name-1234' });
+          const handler = new ClusterResourceHandler(mocks.client, mocks.newRequest('Update', {
+            ...mocks.MOCK_PROPS,
+            name: 'new-cluster-name-1234'
+          }));
+          const resp = await handler.onUpdate();
+          test.deepEqual(mocks.createClusterRequest!, {
+            name: 'new-cluster-name-1234',
+            roleArn: 'arn:of:role',
+            resourcesVpcConfig:
+            {
+              subnetIds: ['subnet1', 'subnet2'],
+              securityGroupIds: ['sg1', 'sg2', 'sg3']
+            }
+          });
           test.deepEqual(resp, { PhysicalResourceId: 'new-cluster-name-1234' });
           test.done();
         },
@@ -151,34 +174,41 @@ export = {
       },
 
       async 'subnets or security groups requires a replacement'(test: Test) {
-        const resp = await handler.onUpdate(mocks.newRequest('Update', {
+        const handler = new ClusterResourceHandler(mocks.client, mocks.newRequest('Update', {
+          ...mocks.MOCK_PROPS,
           resourcesVpcConfig: {
-            subnetIds: [ 'subnet1', 'subnet2' ],
-            securityGroupIds: [ 'sg1' ]
+            subnetIds: ['subnet1', 'subnet2'],
+            securityGroupIds: ['sg1']
           }
         }, {
+          ...mocks.MOCK_PROPS,
           resourcesVpcConfig: {
-            subnetIds: [ 'subnet1' ],
-            securityGroupIds: [ 'sg2' ]
+            subnetIds: ['subnet1'],
+            securityGroupIds: ['sg2']
           }
         }));
+        const resp = await handler.onUpdate();
 
         test.deepEqual(resp, { PhysicalResourceId: 'cluster-fake-request-id' });
         test.deepEqual(mocks.createClusterRequest, {
-          resourcesVpcConfig: {
-            subnetIds: [ 'subnet1', 'subnet2' ],
-            securityGroupIds: [ 'sg1' ] },
-         name: 'cluster-fake-request-id'
+          name: 'cluster-fake-request-id',
+          roleArn: 'arn:of:role',
+          resourcesVpcConfig:
+          {
+            subnetIds: ['subnet1', 'subnet2'],
+            securityGroupIds: ['sg1']
+          }
         });
         test.done();
       },
 
       async '"roleArn" requires a replcement'(test: Test) {
-        const resp = await handler.onUpdate(mocks.newRequest('Update', {
+        const handler = new ClusterResourceHandler(mocks.client, mocks.newRequest('Update', {
           roleArn: 'new-arn'
         }, {
           roleArn: 'old-arn'
         }));
+        const resp = await handler.onUpdate();
 
         test.deepEqual(resp, { PhysicalResourceId: 'cluster-fake-request-id' });
         test.deepEqual(mocks.createClusterRequest, {
@@ -205,11 +235,12 @@ export = {
     'in-place': {
       'version change': {
         async 'from undefined to a specific value'(test: Test) {
-          const resp = await handler.onUpdate(mocks.newRequest('Update', {
+          const handler = new ClusterResourceHandler(mocks.client, mocks.newRequest('Update', {
             version: '12.34'
           }, {
             version: undefined
           }));
+          const resp = await handler.onUpdate();
           test.equal(resp, undefined);
           test.deepEqual(mocks.updateClusterVersionRequest!, {
             name: 'physical-resource-id',
@@ -220,11 +251,12 @@ export = {
         },
 
         async 'from a specific value to another value'(test: Test) {
-          const resp = await handler.onUpdate(mocks.newRequest('Update', {
+          const handler = new ClusterResourceHandler(mocks.client, mocks.newRequest('Update', {
             version: '2.0'
           }, {
             version: '1.1'
           }));
+          const resp = await handler.onUpdate();
           test.equal(resp, undefined);
           test.deepEqual(mocks.updateClusterVersionRequest!, {
             name: 'physical-resource-id',
@@ -235,9 +267,10 @@ export = {
         },
 
         async 'to a new value that is already the current version'(test: Test) {
-          const resp = await handler.onUpdate(mocks.newRequest('Update', {
+          const handler = new ClusterResourceHandler(mocks.client, mocks.newRequest('Update', {
             version: '1.0'
           }));
+          const resp = await handler.onUpdate();
           test.equal(resp, undefined);
           test.deepEqual(mocks.describeClusterRequest, { name: 'physical-resource-id' });
           test.equal(mocks.updateClusterVersionRequest, undefined);
@@ -246,13 +279,14 @@ export = {
         },
 
         async 'fails from specific value to undefined'(test: Test) {
+          const handler = new ClusterResourceHandler(mocks.client, mocks.newRequest('Update', {
+            version: undefined
+          }, {
+            version: '1.2'
+          }));
           let error;
           try {
-            await handler.onUpdate(mocks.newRequest('Update', {
-              version: undefined
-            }, {
-              version: '1.2'
-            }));
+            await handler.onUpdate();
           } catch (e) {
             error = e;
           }

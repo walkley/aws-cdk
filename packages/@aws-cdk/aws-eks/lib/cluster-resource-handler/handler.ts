@@ -1,56 +1,78 @@
 // tslint:disable: max-line-length
 // tslint:disable: no-console
-import { IsCompleteRequest, IsCompleteResponse, OnEventResponse } from '@aws-cdk/custom-resources/lib/provider-framework/types';
+import { IsCompleteResponse, OnEventResponse } from '@aws-cdk/custom-resources/lib/provider-framework/types';
 import aws = require('aws-sdk');
 
 export class ClusterResourceHandler {
-  constructor(private readonly eks: EksClient) { }
+  private readonly requestId: string;
+  private readonly physicalResourceId?: string;
+  private readonly newProps: aws.EKS.CreateClusterRequest;
+  private readonly oldProps: Partial<aws.EKS.CreateClusterRequest>;
+
+  constructor(private readonly eks: EksClient, event: any) {
+    this.requestId = event.RequestId;
+    this.newProps = parseProps(event.ResourceProperties);
+    this.oldProps = event.RequestType === 'Update' ? parseProps(event.OldResourceProperties) : { };
+    this.physicalResourceId = event.PhysicalResourceId;
+  }
+
+  public get clusterName() {
+    if (!this.physicalResourceId) {
+      throw new Error(`Cannot determie cluster name without physical resource ID`);
+    }
+
+    return this.physicalResourceId;
+  }
 
   // ------
   // CREATE
   // ------
 
-  public async onCreate(event: AWSLambda.CloudFormationCustomResourceCreateEvent): Promise<OnEventResponse> {
-    const props = parseProps(event.ResourceProperties);
-    props.name = props.name || generateClusterName(event.RequestId);
-    console.log('createCluster:', JSON.stringify(props, undefined, 2));
-    const resp = await this.eks.createCluster(props);
+  public async onCreate(): Promise<OnEventResponse> {
+    console.log('createCluster:', JSON.stringify(this.newProps, undefined, 2));
+    if (!this.newProps.roleArn) {
+      throw new Error('"roleArn" is required');
+    }
+
+    const resp = await this.eks.createCluster({
+      name: `cluster-${this.requestId}`,
+      ...this.newProps,
+    });
+
     return {
       PhysicalResourceId: resp.cluster!.name
     };
   }
 
-  public async isCreateComplete(event: IsCompleteRequest) {
-    return this.isActive(event);
+  public async isCreateComplete() {
+    return this.isActive();
   }
 
   // ------
   // DELETE
   // ------
 
-  public async onDelete(event: AWSLambda.CloudFormationCustomResourceDeleteEvent): Promise<OnEventResponse> {
-    const clusterName = event.PhysicalResourceId;
-    console.log(`deleting cluster ${clusterName}`);
+  public async onDelete(): Promise<OnEventResponse> {
+    console.log(`deleting cluster ${this.clusterName}`);
     try {
-      await this.eks.deleteCluster({ name: clusterName });
+      await this.eks.deleteCluster({ name: this.clusterName });
     } catch (e) {
       if (e.code !== 'ResourceNotFoundException') {
         throw e;
       } else {
-        console.log(`cluster ${clusterName} not found, idempotently succeeded`);
+        console.log(`cluster ${this.clusterName} not found, idempotently succeeded`);
       }
     }
     return {
-      PhysicalResourceId: event.PhysicalResourceId
+      PhysicalResourceId: this.clusterName
     };
   }
 
-  public async isDeleteComplete(event: IsCompleteRequest): Promise<IsCompleteResponse> {
-    const clusterName = event.PhysicalResourceId!;
-    console.log(`waiting for cluster ${clusterName} to be deleted`);
+  public async isDeleteComplete(): Promise<IsCompleteResponse> {
+    console.log(`waiting for cluster ${this.clusterName} to be deleted`);
 
     try {
-      const resp = await this.eks.describeCluster({ name: clusterName });
+      const resp = await this.eks.describeCluster({ name: this.clusterName });
       console.log('describeCluster returned:', JSON.stringify(resp, undefined, 2));
     } catch (e) {
       if (e.code === 'ResourceNotFoundException') {
@@ -71,10 +93,8 @@ export class ClusterResourceHandler {
   // UPDATE
   // ------
 
-  public async onUpdate(event: AWSLambda.CloudFormationCustomResourceUpdateEvent) {
-    const oldProps = parseProps(event.OldResourceProperties);
-    const newProps = parseProps(event.ResourceProperties);
-    const updates = analyzeUpdate(oldProps, newProps);
+  public async onUpdate() {
+    const updates = analyzeUpdate(this.oldProps, this.newProps);
 
     console.log(updates);
 
@@ -82,23 +102,23 @@ export class ClusterResourceHandler {
     // a new cluster with the new config. The old cluster will automatically be
     // deleted by cloudformation upon success.
     if (updates.replaceName || updates.replaceRole || updates.replaceVpc) {
-      return await this.onCreate({ ...event, RequestType: 'Create' });
+      return await this.onCreate();
     }
 
     // if a version update is required, issue the version update
     if (updates.updateVersion) {
-      if (!newProps.version) {
-        throw new Error(`Cannot remove cluster version configuration. Current version is ${oldProps.version}`);
+      if (!this.newProps.version) {
+        throw new Error(`Cannot remove cluster version configuration. Current version is ${this.oldProps.version}`);
       }
 
-      await this.updateClusterVersion(event.PhysicalResourceId, newProps.version);
+      await this.updateClusterVersion(this.newProps.version);
     }
 
     if (updates.updateLogging || updates.updateAccess) {
       return await this.eks.updateClusterConfig({
-        name: event.PhysicalResourceId,
-        logging: newProps.logging,
-        resourcesVpcConfig: newProps.resourcesVpcConfig
+        name: this.clusterName,
+        logging: this.newProps.logging,
+        resourcesVpcConfig: this.newProps.resourcesVpcConfig
       });
     }
 
@@ -106,25 +126,25 @@ export class ClusterResourceHandler {
     return;
   }
 
-  public async isUpdateComplete(event: IsCompleteRequest) {
-    return this.isActive(event);
+  public async isUpdateComplete() {
+    return this.isActive();
   }
 
-  private async updateClusterVersion(clusterName: string, newVersion: string) {
+  private async updateClusterVersion(newVersion: string) {
     // update-cluster-version will fail if we try to update to the same version,
     // so skip in this case.
-    const cluster = (await this.eks.describeCluster({ name: clusterName })).cluster!;
+    const cluster = (await this.eks.describeCluster({ name: this.clusterName })).cluster!;
     if (cluster.version === newVersion) {
       console.log(`cluster already at version ${cluster.version}, skipping version update`);
       return;
     }
 
-    await this.eks.updateClusterVersion({ name: clusterName, version: newVersion });
+    await this.eks.updateClusterVersion({ name: this.clusterName, version: newVersion });
   }
 
-  private async isActive(event: IsCompleteRequest): Promise<IsCompleteResponse> {
+  private async isActive(): Promise<IsCompleteResponse> {
     console.log('waiting for cluster to become ACTIVE');
-    const resp = await this.eks.describeCluster({ name: event.PhysicalResourceId! });
+    const resp = await this.eks.describeCluster({ name: this.clusterName });
     console.log('describeCluster result:', JSON.stringify(resp, undefined, 2));
     const cluster = resp.cluster!;
     if (cluster.status !== 'ACTIVE') {
@@ -144,6 +164,7 @@ export class ClusterResourceHandler {
 }
 
 export interface EksClient {
+  configureAssumeRole(request: aws.STS.AssumeRoleRequest): void;
   createCluster(request: aws.EKS.CreateClusterRequest): Promise<aws.EKS.CreateClusterResponse>;
   deleteCluster(request: aws.EKS.DeleteClusterRequest): Promise<aws.EKS.DeleteClusterResponse>;
   describeCluster(request: aws.EKS.DescribeClusterRequest): Promise<aws.EKS.DescribeClusterResponse>;
@@ -164,7 +185,7 @@ interface UpdateMap {
   updateAccess: boolean;    // resourcesVpcConfig.endpointPrivateAccess and endpointPublicAccess
 }
 
-function analyzeUpdate(oldProps: aws.EKS.CreateClusterRequest, newProps: aws.EKS.CreateClusterRequest): UpdateMap {
+function analyzeUpdate(oldProps: Partial<aws.EKS.CreateClusterRequest>, newProps: aws.EKS.CreateClusterRequest): UpdateMap {
   console.log('old props: ', JSON.stringify(oldProps));
   console.log('new props: ', JSON.stringify(newProps));
 
@@ -183,8 +204,4 @@ function analyzeUpdate(oldProps: aws.EKS.CreateClusterRequest, newProps: aws.EKS
     updateVersion: newProps.version !== oldProps.version,
     updateLogging: JSON.stringify(newProps.logging) !== JSON.stringify(oldProps.logging),
   };
-}
-
-function generateClusterName(requestId: string) {
-  return `cluster-${requestId}`;
 }

@@ -1,6 +1,7 @@
 import sdk = require('aws-sdk');
 import { EksClient } from '../lib/cluster-resource-handler/handler';
 
+export let configureAssumeRoleRequest: sdk.STS.AssumeRoleRequest | undefined;
 export let createClusterRequest: sdk.EKS.CreateClusterRequest | undefined;
 export let describeClusterRequest: sdk.EKS.DescribeClusterRequest | undefined;
 export let deleteClusterRequest: sdk.EKS.DeleteClusterRequest | undefined;
@@ -11,6 +12,7 @@ export let describeClusterExceptionCode: string | undefined;
 export let deleteClusterErrorCode: string | undefined;
 
 export function reset() {
+  configureAssumeRoleRequest = undefined;
   deleteClusterErrorCode = undefined;
   createClusterRequest = undefined;
   describeClusterRequest = undefined;
@@ -22,6 +24,11 @@ export function reset() {
 }
 
 export const client: EksClient = {
+
+  configureAssumeRole: req => {
+    configureAssumeRoleRequest = req;
+  },
+
   createCluster: async req => {
     createClusterRequest = req;
     return {

@@ -1,4 +1,4 @@
-import { IsCompleteRequest, IsCompleteResponse } from '@aws-cdk/custom-resources/lib/provider-framework/types';
+import { IsCompleteResponse } from '@aws-cdk/custom-resources/lib/provider-framework/types';
 import aws = require('aws-sdk');
 import { ClusterResourceHandler, EksClient } from './handler';
 
@@ -10,22 +10,27 @@ const defaultEksClient: EksClient = {
   describeCluster: req => eks.describeCluster(req).promise(),
   updateClusterConfig: req => eks.updateClusterConfig(req).promise(),
   updateClusterVersion: req => eks.updateClusterVersion(req).promise(),
+  configureAssumeRole: req => {
+    aws.config.credentials = new aws.ChainableTemporaryCredentials({
+      params: req
+    });
+  }
 };
 
 export async function onEvent(event: AWSLambda.CloudFormationCustomResourceEvent) {
-  const provider = new ClusterResourceHandler(defaultEksClient);
+  const provider = new ClusterResourceHandler(defaultEksClient, event);
   switch (event.RequestType) {
-    case 'Create': return provider.onCreate(event);
-    case 'Update': return provider.onUpdate(event);
-    case 'Delete': return provider.onDelete(event);
+    case 'Create': return provider.onCreate();
+    case 'Update': return provider.onUpdate();
+    case 'Delete': return provider.onDelete();
   }
 }
 
-export async function isComplete(event: IsCompleteRequest): Promise<IsCompleteResponse> {
-  const provider = new ClusterResourceHandler(defaultEksClient);
+export async function isComplete(event: AWSLambda.CloudFormationCustomResourceEvent): Promise<IsCompleteResponse> {
+  const provider = new ClusterResourceHandler(defaultEksClient, event);
   switch (event.RequestType) {
-    case 'Create': return provider.isCreateComplete(event);
-    case 'Update': return provider.isUpdateComplete(event);
-    case 'Delete': return provider.isDeleteComplete(event);
+    case 'Create': return provider.isCreateComplete();
+    case 'Update': return provider.isUpdateComplete();
+    case 'Delete': return provider.isDeleteComplete();
   }
 }
